@@ -8101,7 +8101,12 @@ def meta_scaled_grouped_mm(
 @out_wrapper()
 def softmax(x: Tensor, dim: int, half_to_float: bool) -> Tensor:
     if half_to_float:
-        assert x.dtype == torch.half
+        assert x.dtype in [torch.half, torch.bfloat16]
+        # half_to_float is only supported on non-CPU devices
+        assert x.device.type != "cpu", (
+            "softmax with half_to_float=True is not supported on CPU"
+        )
+
     computation_dtype, result_dtype = utils.elementwise_dtypes(
         x, type_promotion_kind=utils.ELEMENTWISE_TYPE_PROMOTION_KIND.DEFAULT
     )
