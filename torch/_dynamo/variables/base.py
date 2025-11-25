@@ -377,13 +377,17 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         """getattr(self, name) returning a python constant"""
         raise NotImplementedError
 
+    def is_symnode_like(self) -> bool:
+        """Return True for values that can participate in SymNode operations"""
+        return False
+
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> "VariableTracker":
         """getattr(self, name) returning a new variable"""
         value = self.const_getattr(tx, name)
         if not variables.ConstantVariable.is_literal(value):
             raise NotImplementedError
         source = self.source and AttrSource(self.source, name)
-        if source and not isinstance(self, variables.ConstantVariable):
+        if source and not self.is_python_constant():
             # The second condition is to avoid guards on const getattr objects
             # like __code__.co_argcount
             install_guard(source.make_guard(GuardBuilder.CONSTANT_MATCH))
