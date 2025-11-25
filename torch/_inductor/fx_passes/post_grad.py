@@ -788,13 +788,22 @@ def is_valid_mm_plus_mm(match: Match):
     if not (config.max_autotune or config.max_autotune_gemm):
         return False
 
-    *_b1, m1, k1 = match.kwargs["mat1"].meta.get("tensor_meta").shape
-    *_b2, k2, n1 = match.kwargs["mat2"].meta.get("tensor_meta").shape
+    # Check if all required tensor_meta exist
+    mat1_meta = match.kwargs["mat1"].meta.get("tensor_meta")
+    mat2_meta = match.kwargs["mat2"].meta.get("tensor_meta")
+    mat3_meta = match.kwargs["mat3"].meta.get("tensor_meta")
+    mat4_meta = match.kwargs["mat4"].meta.get("tensor_meta")
+
+    if mat1_meta is None or mat2_meta is None or mat3_meta is None or mat4_meta is None:
+        return False
+
+    *_b1, m1, k1 = mat1_meta.shape
+    *_b2, k2, n1 = mat2_meta.shape
     if k1 != k2:
         return False
 
-    *_b1, m2, k3 = match.kwargs["mat3"].meta.get("tensor_meta").shape
-    *_b2, k4, n2 = match.kwargs["mat4"].meta.get("tensor_meta").shape
+    *_b1, m2, k3 = mat3_meta.shape
+    *_b2, k4, n2 = mat4_meta.shape
     if k3 != k4:
         return False
 
