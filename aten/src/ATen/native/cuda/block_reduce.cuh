@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cuda/std/tuple>
-
 #include <ATen/native/SharedReduceOps.h>
 #include <ATen/cuda/DeviceUtils.cuh>
 
