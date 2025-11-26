@@ -19,6 +19,9 @@
 #include <ATen/ops/upsample_linear1d_backward_native.h>
 #endif
 
+#define OPTIMIZE_UPSAMPLE
+#define OPTIMIZE_UPSAMPLE_BACKWARD 
+
 namespace at::native {
 namespace {
 
@@ -65,6 +68,56 @@ __global__ void upsample_linear1d_out_frame(
         odata[n][c][w2] = static_cast<scalar_t>(val);
       }
     }
+  }
+}
+
+// BV: Optimized version for upsample_linear1d_out_frame
+// This version exposes more parallelism by launching more threads
+// and each thread does only one interpolation.
+template <typename scalar_t, typename accscalar_t>
+C10_LAUNCH_BOUNDS_1(512)
+__global__ void upsample_linear1d_out_frame_optimized(
+    const int num_kernels,  
+    const accscalar_t rwidth,
+    const bool align_corners,
+    const PackedTensorAccessor64<const scalar_t, 3> idata,
+    PackedTensorAccessor64<scalar_t, 3> odata) {
+  
+  const int batchsize = idata.size(0);
+  const int channels = idata.size(1);
+  const int width1 = idata.size(2);
+  const int width2 = odata.size(2);
+
+  // Instead of looping over "batchsize" and "channels", we launch more threads 
+  // and each thread does only one interpolation
+  const int thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+  const int num_total = batchsize * channels * width2;
+  if (thread_id >= num_total) return;
+
+  const int n = thread_id / (channels * width2); 
+  const int c = (thread_id - n*(channels * width2)) / width2;
+  const int index = thread_id - n*(channels * width2) - c*width2;
+  
+  if (index < num_kernels) {
+    const int w2 = index % width2;
+    // special case: just copy
+    if (width1 == width2) {
+      const int w1 = w2;
+      const scalar_t val = idata[n][c][w1];
+      odata[n][c][w2] = val;
+      return;
+    }
+    //
+    const accscalar_t w1r = area_pixel_compute_source_index<accscalar_t>(
+        rwidth, w2, align_corners, /*cubic=*/false);
+    const int w1 = w1r;
+    const int w1p = (w1 < width1 - 1) ? 1 : 0;
+    const accscalar_t w1lambda = w1r - w1;
+    const accscalar_t w0lambda = static_cast<accscalar_t>(1) - w1lambda;
+    //
+    const accscalar_t val =
+        w0lambda * idata[n][c][w1] + w1lambda * idata[n][c][w1 + w1p];
+    odata[n][c][w2] = static_cast<scalar_t>(val);
   }
 }
 
@@ -116,6 +169,56 @@ __global__ void upsample_linear1d_out_frame_backward(
   }
 }
 
+// Backward (adjoint) operation 1 <- 2 (accumulates)
+// BV: Optimized version for upsample_linear1d_out_frame_backward
+// This version exposes more parallelism by launching more threads
+// and each thread does only one backward interpolation.
+template <typename scalar_t, typename accscalar_t>
+C10_LAUNCH_BOUNDS_1(512)
+__global__ void upsample_linear1d_out_frame_backward_optimized(
+    const int num_kernels, 
+    const accscalar_t rwidth,
+    const bool align_corners,
+    PackedTensorAccessor64<scalar_t, 3> idata,
+    const PackedTensorAccessor64<const scalar_t, 3> odata) {
+  
+  const int batchsize = idata.size(0);
+  const int channels = idata.size(1);
+  const int width1 = idata.size(2);
+  const int width2 = odata.size(2);
+
+  const int thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+  const int num_total = batchsize * channels * width2;
+  if (thread_id >= num_total) return;
+
+  const int n = thread_id / (channels * width2); 
+  const int c = (thread_id - n*(channels * width2)) / width2;
+  const int index = thread_id - n*(channels * width2) - c*width2;
+  
+  if (index < num_kernels) {
+    const int w2 = index % width2;
+    // special case: just copy
+    if (width1 == width2) {
+      const int w1 = w2;
+      const scalar_t val = odata[n][c][w1];
+      idata[n][c][w2] = val;
+      return;
+    }
+    //
+    const accscalar_t w1r = area_pixel_compute_source_index<accscalar_t>(
+        rwidth, w2, align_corners, /*cubic=*/false);
+    const int w1 = w1r;
+    const int w1p = (w1 < width1 - 1) ? 1 : 0;
+    const accscalar_t w1lambda = w1r - w1;
+    const accscalar_t w0lambda = static_cast<accscalar_t>(1) - w1lambda;
+    //
+    const scalar_t d2val = odata[n][c][w2];
+    gpuAtomicAddNoReturn(&idata[n][c][w1], static_cast<scalar_t>(w0lambda * d2val));
+    gpuAtomicAddNoReturn(
+        &idata[n][c][w1 + w1p], static_cast<scalar_t>(w1lambda * d2val));
+  }
+}
+
 static void upsample_linear1d_out_cuda_template(
     const Tensor& output,
     const Tensor& input,
@@ -148,12 +251,26 @@ static void upsample_linear1d_out_cuda_template(
 
         const accscalar_t rwidth = area_pixel_compute_scale<accscalar_t>(
           input_width, output_width, align_corners, scales);
+        
+        #ifdef OPTIMIZE_UPSAMPLE
+        const int batchsize = idata.size(0);
+        const int channels  = idata.size(1);
+        const int width1 = idata.size(2);
+        const int width2 = odata.size(2);
+        const int num_total = batchsize * channels * width2; 
 
+        upsample_linear1d_out_frame_optimized<scalar_t, accscalar_t>
+            <<<ceil_div(num_total, num_threads),
+               num_threads,
+               0,
+               stream>>>(num_kernels, rwidth, align_corners, idata, odata);
+        #else
         upsample_linear1d_out_frame<scalar_t, accscalar_t>
             <<<ceil_div(num_kernels, num_threads),
                num_threads,
                0,
                stream>>>(num_kernels, rwidth, align_corners, idata, odata);
+        #endif
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       });
 }
@@ -193,11 +310,25 @@ static void upsample_linear1d_backward_out_cuda_template(
         const accscalar_t rwidth = area_pixel_compute_scale<accscalar_t>(
             input_width, output_width, align_corners, scales);
 
+        #ifdef OPTIMIZE_UPSAMPLE_BACKWARD
+        const int batchsize = idata.size(0);
+        const int channels  = idata.size(1);
+        const int width1 = idata.size(2);
+        const int width2 = odata.size(2);
+        const int num_total = batchsize * channels * width2; 
+
+        upsample_linear1d_out_frame_backward_optimized<scalar_t, accscalar_t>
+            <<<ceil_div(num_total, num_threads),
+               num_threads,
+               0,
+               stream>>>(num_kernels, rwidth, align_corners, idata, odata);
+        #else
         upsample_linear1d_out_frame_backward<scalar_t, accscalar_t>
             <<<ceil_div(num_kernels, num_threads),
                num_threads,
                0,
                stream>>>(num_kernels, rwidth, align_corners, idata, odata);
+        #endif
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       });
 }
