@@ -257,6 +257,7 @@ def backward(
     grad_variables: Optional[_TensorOrTensors] = None,
     inputs: Optional[_TensorOrTensorsOrGradEdge] = None,
 ) -> None:
+    # print("BV autograd backward")    
     r"""Compute the sum of gradients of given tensors with respect to graph leaves.
 
     The graph is differentiated using the chain rule. If any of ``tensors``

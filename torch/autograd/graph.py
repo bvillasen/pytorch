@@ -858,6 +858,7 @@ def _engine_run_backward(
     *args: Any,
     **kwargs: Any,
 ) -> tuple[torch.Tensor, ...]:
+    # print("BV _engine_run_backward")    
     attach_logging_hooks = log.getEffectiveLevel() <= logging.DEBUG
     if attach_logging_hooks:
         unregister_hooks = _register_logging_hooks_on_whole_graph(t_outputs)

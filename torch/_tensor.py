@@ -618,6 +618,7 @@ class Tensor(torch._C.TensorBase):
                 used to compute the :attr:`tensors`. Defaults to ``None``.
         """
         if has_torch_function_unary(self):
+            # print("BV backward - 0")
             return handle_torch_function(
                 Tensor.backward,
                 (self,),
@@ -627,6 +628,7 @@ class Tensor(torch._C.TensorBase):
                 create_graph=create_graph,
                 inputs=inputs,
             )
+        # print("BV backward - 1")    # This is the one that is called 
         torch.autograd.backward(
             self, gradient, retain_graph, create_graph, inputs=inputs
         )

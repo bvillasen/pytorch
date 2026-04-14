@@ -44,6 +44,9 @@
 #include <unordered_set>
 #include <utility>
 
+// BV
+#include <rocprofiler-sdk-roctx/roctx.h>
+
 namespace torch::autograd {
 
 namespace {
@@ -1305,6 +1308,8 @@ auto Engine::execute(
         "If you have to use this function, make sure to reset the .grad fields of "
         "your parameters to None after use to break the cycle and avoid the leak.");
   }
+  // std::cout << "BV engine execute" << std::endl;
+  roctxRangePush("backward_engine_execute");    
 
   auto compiled_autograd = the_compiled_autograd.load();
   TORCH_INTERNAL_ASSERT(compiled_autograd != COMPILED_AUTOGRAD_POISON);
@@ -1366,6 +1371,7 @@ auto Engine::execute(
   }
 
   // Queue the root
+  roctxRangePush("backward_engine_execute_with_graph_task");    
   if (skip_dummy_node) {
     InputBuffer input_buffer(root_edges.at(0).function->num_inputs());
     auto input = inputs.at(0);
@@ -1385,12 +1391,16 @@ auto Engine::execute(
     execute_with_graph_task(
         graph_task, std::move(graph_root), InputBuffer(variable_list()));
   }
+  roctxRangePop(); // BV: End of engine execute with graph task   
+  
   // Avoid a refcount bump for the Future, since we check for refcount in
   // DistEngine (see TORCH_INTERNAL_ASSERT(futureGrads.use_count() == 1)
   // in dist_engine.cpp).
   auto& fut = graph_task->future_result_;
   fut->wait();
   graph_task->warning_handler_.replay_warnings();
+
+  roctxRangePop(); // BV: End of engine execute   
   return fut->value().toTensorVector();
 }
 

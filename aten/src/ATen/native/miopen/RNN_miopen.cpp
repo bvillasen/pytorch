@@ -23,6 +23,9 @@
 #include <ATen/ops/zeros_like.h>
 #endif
 
+// BV
+#include <rocprofiler-sdk-roctx/roctx.h>
+
 #if !AT_ROCM_ENABLED()
 
 namespace at::native {
@@ -526,6 +529,7 @@ std::tuple<Tensor, Tensor, Tensor, Tensor, Tensor> miopen_rnn(
         bool batch_first, double fn_dropout, bool fn_train, bool fn_bidirectional,
         IntArrayRef fn_batch_sizes, const std::optional<Tensor>& fn_dropout_state_opt
         ) {
+    //BV: 
     // See [Note: hacky wrapper removal for optional tensor]
     c10::MaybeOwned<Tensor> cx_maybe_owned = at::borrow_from_optional_tensor(cx_opt);
     const Tensor& cx = *cx_maybe_owned;
@@ -598,6 +602,7 @@ std::tuple<Tensor, Tensor, Tensor, Tensor, Tensor> miopen_rnn(
     //Train or inference.
     Tensor reserve;
     if (fn_train) { //Train.
+        roctxRangePush("miopenRNNForwardTraining");    
         size_t reserver_size;
         MIOPEN_CHECK(miopenGetRNNTrainingReserveSize(handle, descs.rnn_desc.desc(), fn.tensors.seq_length, x_descs_arr.data(), &reserver_size));
         reserve = at::empty(reserver_size, input.options().dtype(kByte));
@@ -610,7 +615,9 @@ std::tuple<Tensor, Tensor, Tensor, Tensor, Tensor> miopen_rnn(
                 descs.hy_desc.desc(), hy.data_ptr(),
                 descs.cy_desc.desc(), cy.defined() ? cy.data_ptr() : nullptr,
                 workspace.data_ptr(), workspace_size, reserve.mutable_data_ptr(), reserver_size ));
+        roctxRangePop();    
     } else { //Inference.
+        roctxRangePush("miopenRNNForwardInference"); 
         reserve = at::empty({0}, input.options().dtype(kByte));
         MIOPEN_CHECK(miopenRNNForwardInference(handle, descs.rnn_desc.desc(), fn.tensors.seq_length,
                 x_descs_arr.data(), x.data_ptr(),
@@ -621,6 +628,7 @@ std::tuple<Tensor, Tensor, Tensor, Tensor, Tensor> miopen_rnn(
                 descs.hy_desc.desc(), hy.data_ptr(),
                 descs.cy_desc.desc(), cy.defined() ? cy.data_ptr() : nullptr,
                 workspace.data_ptr(), workspace_size));
+        roctxRangePop(); // BV: End of miopenRNNForwardInference   
     }
 
     if (batch_first && !is_input_packed) {
@@ -720,7 +728,7 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> miopen_rnn_backward_input(
         &workspace_size
         ));
     auto workspace = at::empty(workspace_size, input.options().dtype(kByte));
-
+    roctxRangePush("miopenRNNBackwardData");    
     MIOPEN_CHECK(miopenRNNBackwardData(
         handle,
         descs.rnn_desc.desc(),
@@ -738,7 +746,7 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> miopen_rnn_backward_input(
         workspace.data_ptr(), workspace.size(0),
         fn_reserve.data_ptr(), fn_reserve.size(0)
         ));
-
+    roctxRangePop(); // BV: End of miopenRNNBackwardData   
     if(batch_first && !is_input_packed) {
         dx = dx.transpose_(0, 1);
     }
@@ -806,6 +814,7 @@ std::vector<Tensor> miopen_rnn_backward_weight(
     auto x_descs_arr = descs.get_x_descs();
     auto y_descs_arr = descs.get_y_descs();
 
+    roctxRangePush("miopenRNNBackwardWeights");    
     MIOPEN_CHECK(miopenRNNBackwardWeights(
         handle,
         descs.rnn_desc.desc(),
@@ -817,7 +826,7 @@ std::vector<Tensor> miopen_rnn_backward_weight(
         fn_workspace.data_ptr(), fn_workspace.size(0),
         fn_reserve.data_ptr(), fn_reserve.size(0)
         ));
-
+    roctxRangePop(); // BV: End of miopenRNNBackwardWeights   
     auto [grad_params_arr, grad_params_stride0] = get_parameters(handle, fn.rnn, descs.rnn_desc, descs.x_descs[0], w_desc, dw);
     if (grad_params_stride0 == static_cast<size_t>(weight_stride0)) {
         _viewParams(MatrixRef<Tensor>{grad_params_arr, grad_params_stride0},
@@ -901,6 +910,7 @@ std::pair<Tensor, hidden_type> _miopen_impl(
     const Tensor& input, const Tensor& _batch_sizes, const hidden_type& hidden,
     TensorList params, bool has_biases, miopenRNNMode_t mode,
     int64_t num_layers, double dropout_p, bool train, bool bidirectional) {
+    // std::cout << "BV _miopen_impl - 0" << std::endl;
     auto [hx, cx] = unpack_hidden(hidden);
     int64_t hidden_size = hx.size(2);
 
@@ -908,12 +918,12 @@ std::pair<Tensor, hidden_type> _miopen_impl(
     IntArrayRef batch_sizes { _batch_sizes.data_ptr<int64_t>(), static_cast<size_t>(_batch_sizes.size(0)) };
 
     Tensor dropout_state = at::empty({0}, input.options());
-
+    roctxRangePush("miopen_rnn");    
     auto miopen_output = at::miopen_rnn(
         input, params, has_biases ? 4 : 2,
         hx, cx, static_cast<int>(mode), hidden_size, num_layers, /*batch_first=*/false,
         dropout_p, train, bidirectional, batch_sizes, dropout_state);
-
+    roctxRangePop();    
     return {std::get<0>(miopen_output),
         pack_hidden<hidden_type>(std::get<1>(miopen_output), std::get<2>(miopen_output))};
 }
@@ -923,6 +933,7 @@ std::pair<Tensor, hidden_type> _miopen_impl(
     const Tensor& input, const hidden_type& hidden,
     TensorList params, bool has_biases, miopenRNNMode_t mode,
     int64_t num_layers, double dropout_p, bool train, bool bidirectional, bool batch_first) {
+    // std::cout << "BV _miopen_impl - 1" << std::endl;    
     auto [hx, cx] = unpack_hidden(hidden);
     int64_t hidden_size = hx.size(2);
 

@@ -1552,6 +1552,11 @@ target_link_libraries(torch_cpu PUBLIC c10)
 target_link_libraries(torch_cpu PUBLIC ${Caffe2_PUBLIC_DEPENDENCY_LIBS})
 target_link_libraries(torch_cpu PRIVATE ${Caffe2_DEPENDENCY_LIBS})
 target_link_libraries(torch_cpu PRIVATE ${Caffe2_DEPENDENCY_WHOLE_LINK_LIBS})
+# BV: rocTX markers in CPU ATen sources (e.g. RNN.cpp) need libroctx64; it is only
+# linked into torch_python by default (see torch/CMakeLists.txt).
+if(USE_ROCM AND ROCM_ROCTX_LIB)
+  target_link_libraries(torch_cpu PRIVATE ${ROCM_ROCTX_LIB})
+endif()
 if(USE_MPI)
   target_link_libraries(torch_cpu PRIVATE MPI::MPI_CXX)
 endif()

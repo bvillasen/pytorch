@@ -63,6 +63,10 @@
 #include <utility>
 #endif
 
+// BV
+#include <iostream>
+#include <rocprofiler-sdk-roctx/roctx.h>
+
 namespace at::native {
 
 namespace {
@@ -1436,6 +1440,7 @@ std::tuple<Tensor, Tensor, Tensor> lstm(
       const Tensor& _input, TensorList hx,
       TensorList _params, bool has_biases,
       int64_t num_layers, double dropout_p, bool train, bool bidirectional, bool batch_first) {
+  std::cout << "BV lstm - 0" << std::endl;        
   TORCH_CHECK(hx.size() == 2, "lstm expects two hidden states");
   if (use_cudnn(_input)) {
     Tensor output, hy, cy;
@@ -1498,6 +1503,7 @@ std::tuple<Tensor, Tensor, Tensor> lstm(
       TensorList _params, bool has_biases,
       int64_t num_layers, double dropout_p, bool train, bool bidirectional) {
   TORCH_CHECK(hx.size() == 2, "lstm expects two hidden states");
+  // std::cout << "BV lstm - 1" << std::endl;
   if (use_cudnn(data)) {
     Tensor output, hy, cy;
     lstm_packed_cudnn_stub(data.device().type(), output, hy, cy, data, batch_sizes, hx,
@@ -1509,8 +1515,11 @@ std::tuple<Tensor, Tensor, Tensor> lstm(
   if (use_miopen(data, dropout_p)) {
     if (!has_projections) {
       Tensor output, hy, cy;
+      // std::cout << "BV lstm - miopen" << std::endl;
+      roctxRangePush("lstm_packed_miopen_stub");
       lstm_packed_miopen_stub(data.device().type(), output, hy, cy, data, batch_sizes, hx,
               _params, has_biases, num_layers, dropout_p, train, bidirectional);
+      roctxRangePop();        
       return std::make_tuple(std::move(output), std::move(hy), std::move(cy));
     } else {
       TORCH_WARN_ONCE(
